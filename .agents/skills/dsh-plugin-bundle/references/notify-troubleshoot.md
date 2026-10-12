@@ -47,9 +47,9 @@ Host stdout/stderr are not a user-visible console. This plugin appends to:
 
 ## Windows toast path
 
-- Backend (Windows): WinRT toast via PowerShell — `activationType=protocol` `launch=dsh://open`, appID `com.dsh-notify.app` (snoretoast `-install "DSH Notify"` for Start Menu shortcut). Fallback: snoretoast display-only.
-- Do **not** rely on snoretoast `-application` (Action Center never starts it) or pipe activate after banner timeout
-- Link install: `pnpm/npm install` in plugin checkout; ship `scripts/`
+- Backend (Windows): WinRT toast via PowerShell — `activationType=protocol` `launch=dsh://open`, appID `com.deepseek.dsh` (Desktop installer's Start Menu shortcut supplies name + logo; no plugin shortcut). Fallback: snoretoast display-only.
+- Do **not** rely on snoretoast `-application` (Action Center never starts it), app activation of Desktop's AUMID (no toast activator), or pipe activate after banner timeout
+- Link install: `pnpm/npm install` in plugin checkout
 - User check: **Win+N** → **DSH Notify**; debug `winrt-toast-ok shown`
 
 Compose-check Desktop profile without `--dump-config` (blocked): load `@deepseek-ai/dsh-app-boot` via Electron-as-Node against `~/.dsh/profiles/desktop` + install anchor under `app.asar`, or inspect `package.json` bundles + `skippedBundles` at host start.

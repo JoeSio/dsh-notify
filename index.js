@@ -21,15 +21,12 @@
 // Config 用 schemastery 声明；locale 为 .volatile()，可在 Plugins 页下拉切换
 // 而无需重挂插件。浏览器半在 lib/client.js，注册 plugins.bundle.config。
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import z from "@deepseek-ai/schemastery";
-
-const PLUGIN_ROOT = dirname(fileURLToPath(import.meta.url));
 
 /** Cordis 插件名（与组合行的 name 一致）。 */
 const name = "dsh-notify";
@@ -250,13 +247,11 @@ try {
 }
 
 /**
- * Plugin-owned Windows AppUserModelID for toast display identity.
- * Must NOT be Desktop's `com.deepseek.dsh` when relying on app activation;
- * protocol launch (`dsh://open`) is what actually focuses Desktop.
+ * Desktop's AppUserModelID, registered by its installer; Windows takes the toast's
+ * name and logo from that Start Menu shortcut. Toasts must use protocol activation
+ * (`dsh://open`): Desktop has no toast activator, so app activation would do nothing.
  */
-/** Neutral public AUMID — do not embed personal/org machine names. */
-const WINDOWS_NOTIFY_APP_ID = "com.dsh-notify.app";
-const WINDOWS_NOTIFY_SHORTCUT_NAME = "DSH Notify";
+const WINDOWS_NOTIFY_APP_ID = "com.deepseek.dsh";
 const DSH_FOCUS_URL = "dsh://open";
 
 /** Resolve bundled snoretoast.exe next to node-notifier. */
@@ -275,30 +270,6 @@ function resolveSnoretoastPath() {
   }
 }
 
-/** Shortcut target for snoretoast -install (required before custom appID toasts show). */
-function resolveFocusHelperPath() {
-  return join(PLUGIN_ROOT, "scripts", "focus-desktop.cmd");
-}
-
-/** Once per host process: register Start Menu shortcut required by custom appID. */
-let windowsNotifyShortcutReady = false;
-function ensureWindowsNotifyShortcut(snore, helper) {
-  if (windowsNotifyShortcutReady) return true;
-  if (snore === undefined || !existsSync(snore) || !existsSync(helper)) return false;
-  try {
-    execFileSync(snore, ["-install", WINDOWS_NOTIFY_SHORTCUT_NAME, helper, WINDOWS_NOTIFY_APP_ID], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    windowsNotifyShortcutReady = true;
-    debugLog(`snoretoast-install ok appID=${WINDOWS_NOTIFY_APP_ID} helper=${JSON.stringify(helper)}`);
-    return true;
-  } catch (error) {
-    debugLog(`snoretoast-install-error ${error?.message ?? error}`);
-    return false;
-  }
-}
-
 /** Escape text for inclusion inside a WinRT toast XML document. */
 function escapeXml(text) {
   return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -310,8 +281,6 @@ function escapeXml(text) {
  */
 function sendWindowsToast(title, body) {
   const snore = resolveSnoretoastPath();
-  const helper = resolveFocusHelperPath();
-  ensureWindowsNotifyShortcut(snore, helper);
 
   const xml = `<toast activationType="protocol" launch="${escapeXml(DSH_FOCUS_URL)}">
   <visual>

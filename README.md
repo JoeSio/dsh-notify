@@ -68,7 +68,7 @@ dsh --profile web --dump-config   # 应出现 "# == dsh-notify" 层
 - **等待审批**：监听 `approval/request` 瀑布（必须调用并返回 `next()` 以保持审批链）。
 - 根 agent 过滤：`agents.roots()`。
 - 通知发送：Linux / macOS 走 **node-notifier**（`notify-send` / terminal-notifier）；Windows 走 WinRT protocol toast（点击 `dsh://open` 聚焦 Desktop），失败时回退 snoretoast（仅展示）。失败只记日志不影响 agent。
-- **点击通知（Windows）**：`activationType=protocol` + `launch=dsh://open`；AUMID 为中性的 `com.dsh-notify.app`（通知中心显示 **DSH Notify**）。会话直达仍需 harness 透传 `session=`。
+- **点击通知（Windows）**：`activationType=protocol` + `launch=dsh://open`；AUMID 复用 Desktop 安装器注册的 `com.deepseek.dsh`，通知显示 **DeepSeek Harness** 名称与图标（必须用协议激活，Desktop 不处理 toast 应用激活）。会话直达仍需 harness 透传 `session=`。
 
 ## 排查
 

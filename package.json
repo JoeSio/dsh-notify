@@ -12,7 +12,6 @@
   "files": [
     "index.js",
     "lib",
-    "scripts",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

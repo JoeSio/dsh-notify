@@ -187,7 +187,7 @@ Detailed Windows / completion debugging: [references/notify-troubleshoot.md](ref
 | Desktop `--dump-config` errors | Expected; inspect profile `package.json` / quit+reopen Desktop |
 | No host console for `[dsh-notify]` logs | Read `~/.dsh/dsh-notify.debug.log`; fully restart after code changes |
 | Windows: toast API works, user sees nothing | Check Win+N and Settings → Notifications → **DSH Notify** |
-| Windows: toast click does not focus Desktop | Use WinRT protocol toast (`launch=dsh://open`, appID `com.dsh-notify.app`); do not rely on snoretoast `-application` or Desktop AUMID; fully quit/reopen after plugin change |
+| Windows: toast click does not focus Desktop | Use WinRT protocol toast (`launch=dsh://open`, appID `com.deepseek.dsh` for Desktop's name/logo); do not rely on snoretoast `-application` or app activation; fully quit/reopen after plugin change |
 | Plugins page has Uninstall/Components but no config fields | Need `Config` + `.volatile()` **and** `lib/client.js` registering `plugins.bundle.config` / `plugins.row.config`; schema alone is not enough |
 | Language dropdown missing after code change | Confirm `dsh.client` + `./client` export; `pnpm/npm install` in plugin; fully quit Desktop |
 
