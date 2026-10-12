@@ -4,12 +4,12 @@ DSH（DeepSeek Harness）系统通知插件：当 agent **完成任务**、**出
 
 ## 触发场景
 
-| 场景 | 通知标题 | 说明 |
+| 场景 | 标题（zh / en） | 说明 |
 | --- | --- | --- |
-| 任务完成 | `DSH · 任务完成` | agent 结束一轮运行回到 idle（turn/end reason 为 completed / max-tokens），正文为最近一条用户消息摘要 |
-| 任务出错 | `DSH · 任务出错` | 一轮运行以 error 结束，正文为错误信息 |
-| 阻塞提问 | `DSH · 需要你回答` | agent 调用 `ask_user_question`，工具阻塞等待你的回答，正文为问题文本 |
-| 等待审批 | `DSH · 等待审批` | agent 的工具派发被审批环节挂起，正文为审批原因 |
+| 任务完成 | `DSH · 任务完成` / `DSH · Task complete` | agent 结束一轮运行回到 idle（turn/end reason 为 completed / max-tokens），正文为最近一条用户消息摘要 |
+| 任务出错 | `DSH · 任务出错` / `DSH · Task error` | 一轮运行以 error 结束，正文为错误信息 |
+| 阻塞提问 | `DSH · 需要你回答` / `DSH · Needs your answer` | agent 调用 `ask_user_question`，工具阻塞等待你的回答，正文为问题文本 |
+| 等待审批 | `DSH · 等待审批` / `DSH · Awaiting approval` | agent 的工具派发被审批环节挂起，正文为审批原因 |
 
 默认只通知**根 agent**（子 agent 完成任务不通知，避免子代理扇出刷屏），用户主动取消（aborted）不通知。
 
@@ -39,6 +39,7 @@ dsh --profile web --dump-config   # 应出现 "# == dsh-notify" 层
   name: dsh-notify
   config:
     appName: DSH
+    locale: en              # zh | en（也可用 Plugins 页下拉选择；默认 zh）
     notifyOnComplete: true
     notifyOnError: true
     notifyOnQuestion: true
@@ -50,6 +51,10 @@ dsh --profile web --dump-config   # 应出现 "# == dsh-notify" 层
     bodyLimit: 100
     enabled: true
 ```
+
+### Plugins 页语言下拉
+
+打开 **Plugins → dsh-notify**：描述与 Components 之间会出现 **Language / 通知语言** 下拉（中文 / English）。选好后点 **Save**；`locale` 为 volatile，无需重挂插件，下一则通知即用新语言。
 
 ## 测试
 

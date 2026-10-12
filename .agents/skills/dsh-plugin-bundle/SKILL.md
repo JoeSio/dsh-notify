@@ -6,10 +6,13 @@ description: >-
   dsh.bundle, cordis.patch.yml, dsh plugin add/remove, "declares no bundle",
   profile bundles, plugin install failures, Cordis apply/inject, packaging a
   local/git plugin for web/desktop profiles, Desktop notifications not firing,
-  /dsh-notify-test, Session.events / snapshotEvents, or Windows snoretoast —
-  even if the user only says "install the plugin" or "fix dsh load". Prefer
-  this over re-fetching DSH docs. For LLM provider/credential/reasoning-effort
-  config, use the personal dsh-configuration skill instead.
+  /dsh-notify-test, Session.events / snapshotEvents, Windows snoretoast,
+  Plugins page config UI, locale/language dropdown, Config.volatile,
+  plugins.bundle.config, dsh.client, or lib/client.js — even if the user only
+  says "install the plugin" or "fix dsh load". Prefer this over re-fetching
+  DSH docs. For LLM provider/credential/reasoning-effort config, use the
+  personal dsh-configuration skill instead. Harness source (when available):
+  C:\Users\joesiw\dev\others\deepseek-harness.
 ---
 
 # DSH plugin bundles
@@ -34,9 +37,10 @@ This package declares no bundle, so it cannot be installed as a plugin: <name> d
 
 ```
 <plugin>/
-├── package.json        # name, type:module, main, files, dsh.bundle
+├── package.json        # name, type:module, main, files, dsh.bundle (+ optional dsh.client)
 ├── cordis.patch.yml    # insert row(s); name = package name for resolution
-└── index.js            # export { apply, name, inject? } (or default object/class)
+├── index.js            # export { apply, name, inject?, Config? }
+└── lib/client.js       # optional browser half (Plugins page UI)
 ```
 
 ### package.json (required keys)
@@ -46,14 +50,25 @@ This package declares no bundle, so it cannot be installed as a plugin: <name> d
   "name": "dsh-notify",
   "type": "module",
   "main": "index.js",
-  "files": ["index.js", "cordis.patch.yml"],
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+  "exports": { ".": "./index.js", "./client": "./lib/client.js", "./package.json": "./package.json" },
+  "files": ["index.js", "lib", "cordis.patch.yml"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  }
 }
 ```
 
-- Put **both** the entry module and the patch file in `files`, or pack/publish drops the layer.
+- Put the entry module, patch YAML, and (if present) `lib/` in `files`, or pack/publish drops them.
 - `patch` may be a string or an ordered list of YAML files (applied as one layer).
-- Third-party runtime deps → `dependencies`. Host-shared dsh packages → `peerDependencies` + `devDependencies` (host copy wins at runtime).
+- Third-party runtime deps → `dependencies`. Out-of-tree plugins that export a schemastery `Config` should depend on `@deepseek-ai/schemastery` **~3.18.4+** (needs `.volatile()`); do not assume the host copy is on the plugin's resolve path.
+- Host-shared dsh packages used only via `ctx` → duck-type / `ctx.get`; avoid importing them as values from the host tree.
 
 ### cordis.patch.yml
 
@@ -125,6 +140,21 @@ Do **not** re-`insert` the same id unless intentional. Override by id in the pro
 
 `id` selects the row; optional `name` must match if present.
 
+## Plugins page config UI (bundle detail)
+
+The Desktop **Plugins → \<package\>** page (Uninstall, version badge, **Components N total · M running**) is owned by `dsh-client-ui-plugin-manager` inside the Electron app — **not** under `~/.dsh/profiles/*/node_modules`. Searching the profile tree for that package will miss.
+
+**Config schema alone does not render controls on that page.** `autoGenerate` defaults to true on the Host describe payload, but there is no shipped auto-form consumer yet. A dropdown/field appears only when:
+
+1. **Host** exports schemastery `Config` with editable fields marked `.volatile()` (ordinary fields stay out of the live form). Read with `.get()` (or a `current()` helper that accepts plain or Volatile). Prefer reading live values inside handlers so locale/settings changes apply without remount.
+2. **Browser half** ships `./client` → `lib/client.js` in the client module system's lazy-CJS factory format (`window.__ModuleLoader__.load({ id, factory })`). Out-of-tree plugins can **hand-write** this (see sibling `dsh-tree-mention`); the monorepo `tsdown.client` preset is not required.
+3. Register into a Plugins slot while the Host serves the entry id:
+   - `plugins.bundle.config` — keyed by **npm package name**; renders between description and Components (`view: 'page'` only; form is **not** passed in props — use `ctx.configForms.get('<entry-id>')`).
+   - `plugins.row.config` — keyed `<package>#<rowId>`; adds a Configure control and receives `form` on the row page.
+4. Gate with `ctx.configForms.whileServed(['<entry-id>'], …)` so the slot exists only while the Host exposes that namespace. Declare `dsh.client.inject` for `@deepseek-ai/dsh-client-ui-settings` and `@deepseek-ai/dsh-client-ui-plugin-manager` (and require `react` inside the factory).
+
+Reference in this repo: `index.js` (`Config.locale` volatile) + `lib/client.js` (language select). Sibling patterns: `dsh-web-search-kimi` (Host Config only), `dsh-tree-mention` (hand-written client). Deeper source: harness `packages/client/ui-plugin-manager`, `docs/cookbook/adding-a-settings-card.md`.
+
 ## Session history reads (host API)
 
 Current DSH **removed** `Session.events`. Do **not** read `agent.session.events` for turn outcomes — it is always undefined and silently breaks completion logic.
@@ -133,12 +163,15 @@ Use `agent.session.snapshotEvents()` (deprecated but still present; optional fal
 
 ## This repo (dsh-notify)
 
-- Package / Cordis name: `dsh-notify`
-- Entry: `index.js` (ESM); `inject: ['commands']`; uses `node-notifier` (Windows → snoretoast)
+- Package / Cordis name: `dsh-notify` (entry id = package name)
+- Entry: `index.js` (ESM); `inject: ['commands']`; exports `Config` (`locale` volatile `zh`|`en`); uses `node-notifier` (Windows → snoretoast)
+- Browser: `lib/client.js` → `plugins.bundle.config` key `dsh-notify` (Language / 通知语言 select)
+- Deps: `node-notifier`, `@deepseek-ai/schemastery` (~3.18.4+)
 - Bundle patch: `cordis.patch.yml` inserts `id: dsh-notify`
 - Smoke: `/dsh-notify-test`; diagnostics: `~/.dsh/dsh-notify.debug.log`
 - Fork remote: `origin` = `https://github.com/JoeSio/dsh-notify.git`; `upstream` = haytham818
 - Git author for commits: repo-local `JoeSio <joe_sio@hotmail.com>` (see `.cursor/rules/git-author.mdc`)
+- Local harness checkout (preferred over re-fetching docs): `C:\Users\joesiw\dev\others\deepseek-harness`
 
 Detailed Windows / completion debugging: [references/notify-troubleshoot.md](references/notify-troubleshoot.md).
 
@@ -155,11 +188,15 @@ Detailed Windows / completion debugging: [references/notify-troubleshoot.md](ref
 | Desktop `--dump-config` errors | Expected; inspect profile `package.json` / quit+reopen Desktop |
 | No host console for `[dsh-notify]` logs | Read `~/.dsh/dsh-notify.debug.log`; fully restart after code changes |
 | Windows: toast API works, user sees nothing | Check Win+N and Settings → Notifications → **DSH** |
+| Plugins page has Uninstall/Components but no config fields | Need `Config` + `.volatile()` **and** `lib/client.js` registering `plugins.bundle.config` / `plugins.row.config`; schema alone is not enough |
+| Language dropdown missing after code change | Confirm `dsh.client` + `./client` export; `pnpm/npm install` in plugin; fully quit Desktop |
 
 ## Official docs (fetch only if skill is insufficient)
 
 - First plugin / `apply`: https://deepseek-harness.github.io/deepseek-harness/en/develop/basic/
 - Bundle + `dsh plugin add`: https://deepseek-harness.github.io/deepseek-harness/en/develop/basic/publish
+- Live Config forms cookbook: https://deepseek-harness.github.io/deepseek-harness/en/reference/cookbook/adding-a-settings-card
 - Architecture (profile/bundle): https://deepseek-harness.github.io/deepseek-harness/en/reference/
+- Prefer local checkout `C:\Users\joesiw\dev\others\deepseek-harness` (`packages/client/ui-plugin-manager`, `docs/cookbook/adding-a-settings-card.md`) over re-fetching.
 
 Do not re-research these on every session unless versions or errors contradict this skill — then update this skill.

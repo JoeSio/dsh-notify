@@ -10,8 +10,10 @@ Use when packaging a new plugin or diagnosing install failures.
 - [ ] `package.json` has `"type": "module"` and correct `main`
 - [ ] `package.json` has `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`
 - [ ] `cordis.patch.yml` inserts a row whose `name` equals the package `name`
-- [ ] `files` includes both the entry module and every patch YAML
+- [ ] `files` includes the entry module, every patch YAML, and `lib/` when a client half exists
 - [ ] Runtime deps listed under `dependencies`; plugin checkout installed once
+- [ ] (Optional Plugins UI) Export schemastery `Config` with `.volatile()` fields; depend on `@deepseek-ai/schemastery` ~3.18.4+
+- [ ] (Optional Plugins UI) `exports["./client"]` + `dsh.client` + `lib/client.js` registering `plugins.bundle.config` or `plugins.row.config` via `configForms.whileServed`
 
 ## Install
 
@@ -25,10 +27,12 @@ Use when packaging a new plugin or diagnosing install failures.
 
 - [ ] User tweaks go in profile `cordis.patch.yml` by `id`
 - [ ] Entire `config` restated (no deep merge)
+- [ ] Or use Plugins page controls for volatile fields (this repo: Language select)
 
 ## This repo (notify) extras
 
-- [ ] `node_modules/node-notifier` present in plugin checkout
+- [ ] `node_modules/node-notifier` and `@deepseek-ai/schemastery` present in plugin checkout
 - [ ] `~/.dsh/dsh-notify.debug.log` shows `mounted` after restart
+- [ ] Plugins → dsh-notify shows Language / 通知语言 between description and Components
 - [ ] Windows: Win+N / Notifications → **DSH** if toast path works but UI is quiet
 - [ ] Details: [notify-troubleshoot.md](notify-troubleshoot.md)

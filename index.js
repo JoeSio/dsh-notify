@@ -12,12 +12,16 @@
 //   - 等待审批    approval/request 派发（工具等待用户批准）
 //
 // 安装、配置与排查见仓库 README.md。
+//
+// Config 用 schemastery 声明；locale 为 .volatile()，可在 Plugins 页下拉切换
+// 而无需重挂插件。浏览器半在 lib/client.js，注册 plugins.bundle.config。
 
 import { execFile } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import z from "@deepseek-ai/schemastery";
 
 /** Cordis 插件名（与组合行的 name 一致）。 */
 const name = "dsh-notify";
@@ -25,21 +29,99 @@ const name = "dsh-notify";
 /** Wait for the command registry so `/dsh-notify-test` is always registered. */
 const inject = ["commands"];
 
-/** 默认配置；可由组合行的 config 覆盖。 */
-const DEFAULTS = {
-  enabled: true,
-  appName: "DSH",
-  notifyOnComplete: true,
-  notifyOnError: true,
-  notifyOnQuestion: true,
-  notifyOnApproval: true,
+/**
+ * Cordis validates this into the settings form. Only volatile fields are
+ * editable live on the Plugins page; locale is the one we surface as a select.
+ */
+const Config = z.object({
+  enabled: z.boolean().default(true),
+  appName: z.string().default("DSH"),
+  locale: z
+    .union(["zh", "en"])
+    .default("zh")
+    .volatile()
+    .description("Language for notification titles and fallback bodies."),
+  notifyOnComplete: z.boolean().default(true),
+  notifyOnError: z.boolean().default(true),
+  notifyOnQuestion: z.boolean().default(true),
+  notifyOnApproval: z.boolean().default(true),
   // 只通知根 agent（子 agent 完成时静默，避免子代理扇出刷屏）。
-  rootsOnly: true,
-  completeUrgency: "normal",
-  blockingUrgency: "critical",
-  errorUrgency: "critical",
-  bodyLimit: 100,
+  rootsOnly: z.boolean().default(true),
+  completeUrgency: z.union(["low", "normal", "critical"]).default("normal"),
+  blockingUrgency: z.union(["low", "normal", "critical"]).default("critical"),
+  errorUrgency: z.union(["low", "normal", "critical"]).default("critical"),
+  bodyLimit: z.number().step(1).min(1).default(100),
+});
+
+/** User-facing notification strings by locale. */
+const MESSAGES = {
+  zh: {
+    taskComplete: "任务完成",
+    maxTokensSuffix: "（达到输出上限）",
+    sessionFallback: (id) => `会话 ${id}`,
+    taskError: "任务出错",
+    agentErrorFallback: "agent 运行出错",
+    needsAnswer: "需要你回答",
+    waitingAnswerFallback: "agent 正在等待你的回答",
+    awaitingApproval: "等待审批",
+    toolNeedsApproval: (tool) => `工具 ${tool} 需要审批`,
+    testTitle: "测试通知",
+    testBody: "dsh-notify 插件工作正常",
+    testCommandOk: "已发送测试通知，请查看系统通知栏（Win+N）。",
+    testCommandDescription: "发送一条 dsh-notify 测试系统通知",
+  },
+  en: {
+    taskComplete: "Task complete",
+    maxTokensSuffix: " (hit output limit)",
+    sessionFallback: (id) => `Session ${id}`,
+    taskError: "Task error",
+    agentErrorFallback: "Agent error",
+    needsAnswer: "Needs your answer",
+    waitingAnswerFallback: "Agent is waiting for your answer",
+    awaitingApproval: "Awaiting approval",
+    toolNeedsApproval: (tool) => `Tool ${tool} needs approval`,
+    testTitle: "Test notification",
+    testBody: "dsh-notify is working",
+    testCommandOk: "Test notification sent. Check the system notification center (Win+N).",
+    testCommandDescription: "Send a dsh-notify test system notification",
+  },
 };
+
+/** Read one config field whether Cordis hands over a Volatile or a plain value. */
+function current(field) {
+  if (field === undefined || field === null) return undefined;
+  return typeof field.get === "function" ? field.get() : field;
+}
+
+/** Normalize config locale to a supported message catalog key. */
+function resolveLocale(locale) {
+  if (typeof locale !== "string" || !locale.trim()) return "zh";
+  const base = locale.trim().toLowerCase().split(/[-_]/)[0];
+  return base === "en" ? "en" : "zh";
+}
+
+function messagesFor(locale) {
+  return MESSAGES[resolveLocale(locale)];
+}
+
+/** Snapshot non-volatile options; locale is read live per notification. */
+function optionsSnapshot(config) {
+  const raw = config ?? {};
+  return {
+    enabled: current(raw.enabled) !== false,
+    appName: current(raw.appName) ?? "DSH",
+    notifyOnComplete: current(raw.notifyOnComplete) !== false,
+    notifyOnError: current(raw.notifyOnError) !== false,
+    notifyOnQuestion: current(raw.notifyOnQuestion) !== false,
+    notifyOnApproval: current(raw.notifyOnApproval) !== false,
+    rootsOnly: current(raw.rootsOnly) !== false,
+    completeUrgency: current(raw.completeUrgency) ?? "normal",
+    blockingUrgency: current(raw.blockingUrgency) ?? "critical",
+    errorUrgency: current(raw.errorUrgency) ?? "critical",
+    bodyLimit: current(raw.bodyLimit) ?? 100,
+    localeField: raw.locale,
+  };
+}
 
 /** Append one diagnostic line under ~/.dsh (Desktop host stdout is not visible). */
 function debugLog(message) {
@@ -55,11 +137,6 @@ function debugLog(message) {
 // ---------------------------------------------------------------------------
 // 工具函数
 // ---------------------------------------------------------------------------
-
-function mergeConfig(config) {
-  if (config === null || typeof config !== "object") return { ...DEFAULTS };
-  return { ...DEFAULTS, ...config };
-}
 
 /** 压缩为单行并截断。 */
 function truncate(text, limit) {
@@ -254,15 +331,23 @@ function sendNotification(options, title, body, urgency) {
 // ---------------------------------------------------------------------------
 
 function apply(ctx, config) {
-  const options = mergeConfig(config);
+  const options = optionsSnapshot(config);
   if (!options.enabled) {
     console.log("[dsh-notify] disabled by config, not mounting listeners");
     debugLog("disabled by config");
     return;
   }
 
+  function liveLocale() {
+    return resolveLocale(current(options.localeField) ?? "zh");
+  }
+
+  function liveMsg() {
+    return messagesFor(liveLocale());
+  }
+
   debugLog(
-    `mounting notifier=${notifier !== null} rootsOnly=${options.rootsOnly} platform=${process.platform} execPath=${process.execPath}`,
+    `mounting notifier=${notifier !== null} locale=${liveLocale()} rootsOnly=${options.rootsOnly} platform=${process.platform} execPath=${process.execPath}`,
   );
 
   // Optional: agents (root filter). commands is injected.
@@ -289,15 +374,16 @@ function apply(ctx, config) {
         debugLog(`status-idle skip no turn/end agent=${agent?.id}`);
         return;
       }
+      const msg = liveMsg();
       if (reason.kind === "completed" || reason.kind === "max-tokens") {
         if (!options.notifyOnComplete) return;
-        const summary = truncate(lastUserText(agent), options.bodyLimit) || `会话 ${agent.id}`;
-        const suffix = reason.kind === "max-tokens" ? "（达到输出上限）" : "";
-        sendNotification(options, `${options.appName} · 任务完成${suffix}`, summary, options.completeUrgency);
+        const summary = truncate(lastUserText(agent), options.bodyLimit) || msg.sessionFallback(agent.id);
+        const suffix = reason.kind === "max-tokens" ? msg.maxTokensSuffix : "";
+        sendNotification(options, `${options.appName} · ${msg.taskComplete}${suffix}`, summary, options.completeUrgency);
       } else if (reason.kind === "error") {
         if (!options.notifyOnError) return;
-        const detail = truncate(errorText(reason), options.bodyLimit) || "agent 运行出错";
-        sendNotification(options, `${options.appName} · 任务出错`, detail, options.errorUrgency);
+        const detail = truncate(errorText(reason), options.bodyLimit) || msg.agentErrorFallback;
+        sendNotification(options, `${options.appName} · ${msg.taskError}`, detail, options.errorUrgency);
       } else {
         // kind === "aborted"（用户取消）与 "blocked"（内部拒绝）不通知。
         debugLog(`status-idle skip reason.kind=${reason.kind} agent=${agent?.id}`);
@@ -312,11 +398,12 @@ function apply(ctx, config) {
   ctx.on("tools/execute", (exec, next) => {
     try {
       if (exec?.name === "ask_user_question" && options.notifyOnQuestion && isRoot(exec.agent)) {
+        const msg = liveMsg();
         const text = questionText(exec.arguments);
         sendNotification(
           options,
-          `${options.appName} · 需要你回答`,
-          text || "agent 正在等待你的回答",
+          `${options.appName} · ${msg.needsAnswer}`,
+          text || msg.waitingAnswerFallback,
           options.blockingUrgency,
         );
       }
@@ -330,8 +417,10 @@ function apply(ctx, config) {
   ctx.on("approval/request", (req, next) => {
     try {
       if (options.notifyOnApproval && isRoot(req?.agent)) {
-        const detail = truncate(req.reason ?? "", options.bodyLimit) || `工具 ${req.toolName ?? "?"} 需要审批`;
-        sendNotification(options, `${options.appName} · 等待审批`, detail, options.blockingUrgency);
+        const msg = liveMsg();
+        const detail =
+          truncate(req.reason ?? "", options.bodyLimit) || msg.toolNeedsApproval(req.toolName ?? "?");
+        sendNotification(options, `${options.appName} · ${msg.awaitingApproval}`, detail, options.blockingUrgency);
       }
     } catch (error) {
       console.error(`[dsh-notify] approval/request 处理失败: ${String(error)}`);
@@ -341,22 +430,24 @@ function apply(ctx, config) {
 
   // 测试命令：/dsh-notify-test —— 手动验证通知链路。
   ctx.effect(function* () {
+    const initialMsg = liveMsg();
     yield ctx.commands.register({
       name: "dsh-notify-test",
-      description: "发送一条 dsh-notify 测试系统通知",
+      description: initialMsg.testCommandDescription,
       handler: () => {
-        sendNotification(options, `${options.appName} · 测试通知`, "dsh-notify 插件工作正常", "normal");
-        return { kind: "success", text: "已发送测试通知，请查看系统通知栏（Win+N）。" };
+        const msg = liveMsg();
+        sendNotification(options, `${options.appName} · ${msg.testTitle}`, msg.testBody, "normal");
+        return { kind: "success", text: msg.testCommandOk };
       },
     });
   }, "dsh-notify test command");
 
   console.log(
-    `[dsh-notify] 插件已挂载 (rootsOnly=${options.rootsOnly}, notifyOnComplete=${options.notifyOnComplete}, ` +
+    `[dsh-notify] 插件已挂载 (locale=${liveLocale()}, rootsOnly=${options.rootsOnly}, notifyOnComplete=${options.notifyOnComplete}, ` +
       `notifyOnQuestion=${options.notifyOnQuestion}, notifyOnApproval=${options.notifyOnApproval}, ` +
       `notifyOnError=${options.notifyOnError})`,
   );
   debugLog("mounted listeners + /dsh-notify-test");
 }
 
-export { apply, inject, name };
+export { apply, Config, inject, name };
