@@ -14,10 +14,16 @@
 // 安装、配置与排查见仓库 README.md。
 
 import { execFile } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 /** Cordis 插件名（与组合行的 name 一致）。 */
 const name = "dsh-notify";
+
+/** Wait for the command registry so `/dsh-notify-test` is always registered. */
+const inject = ["commands"];
 
 /** 默认配置；可由组合行的 config 覆盖。 */
 const DEFAULTS = {
@@ -35,6 +41,17 @@ const DEFAULTS = {
   bodyLimit: 100,
 };
 
+/** Append one diagnostic line under ~/.dsh (Desktop host stdout is not visible). */
+function debugLog(message) {
+  try {
+    const dir = join(homedir(), ".dsh");
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "dsh-notify.debug.log"), `${new Date().toISOString()} ${message}\n`, "utf8");
+  } catch {
+    // Diagnostics must never break the host.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 工具函数
 // ---------------------------------------------------------------------------
@@ -51,9 +68,28 @@ function truncate(text, limit) {
   return oneLine.length <= limit ? oneLine : `${oneLine.slice(0, Math.max(0, limit - 1))}…`;
 }
 
+/**
+ * Read the session event log. Current DSH removed `Session.events`; use
+ * `snapshotEvents()` (still available, deprecated). Fall back to `.events` for
+ * older hosts.
+ */
+function sessionEvents(agent) {
+  const session = agent?.session;
+  if (session === undefined || session === null) return undefined;
+  if (typeof session.snapshotEvents === "function") {
+    try {
+      return session.snapshotEvents();
+    } catch {
+      return undefined;
+    }
+  }
+  const legacy = session.events;
+  return Array.isArray(legacy) ? legacy : undefined;
+}
+
 /** 从会话事件日志中自后向前找最后一个指定类型的事件。 */
 function lastEvent(agent, type) {
-  const events = agent?.session?.events;
+  const events = sessionEvents(agent);
   if (!Array.isArray(events)) return undefined;
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
@@ -137,18 +173,28 @@ try {
  */
 function sendNotification(options, title, body, urgency) {
   console.log(`[dsh-notify] ${title}: ${body}`);
+  debugLog(`notify title=${JSON.stringify(title)} body=${JSON.stringify(body)} platform=${process.platform}`);
 
   // 主路径：node-notifier。
   // 平台分派由库内部完成：Linux→notify-send（-a appName、-u urgency），
   // macOS→terminal-notifier，Windows→snoretoast（appName 映射为 appID）。
   if (notifier !== null) {
     try {
-      notifier.notify({ title, message: body, urgency, appName: options.appName }, (error) => {
-        if (error) console.error(`[dsh-notify] 通知发送失败: ${error.message ?? error}`);
-      });
+      notifier.notify(
+        { title, message: body, urgency, appName: options.appName, appID: options.appName },
+        (error, response, metadata) => {
+          if (error) {
+            console.error(`[dsh-notify] 通知发送失败: ${error.message ?? error}`);
+            debugLog(`notify-error ${error.message ?? error}`);
+            return;
+          }
+          debugLog(`notify-ok response=${JSON.stringify(response)} meta=${JSON.stringify(metadata)}`);
+        },
+      );
       return;
     } catch (error) {
       console.error(`[dsh-notify] 通知发送失败: ${String(error)}`);
+      debugLog(`notify-throw ${String(error)}`);
     }
     return;
   }
@@ -164,11 +210,42 @@ function sendNotification(options, title, body, urgency) {
       execFile("osascript", ["-e", script], (error) => {
         if (error) console.error(`[dsh-notify] osascript 失败: ${error.message}`);
       });
+    } else if (process.platform === "win32") {
+      // node-notifier missing: invoke bundled snoretoast directly.
+      const require = createRequire(import.meta.url);
+      let snore;
+      try {
+        const notifierRoot = join(require.resolve("node-notifier/package.json"), "..");
+        snore = join(
+          notifierRoot,
+          "vendor",
+          "snoreToast",
+          process.arch === "x64" ? "snoretoast-x64.exe" : "snoretoast-x86.exe",
+        );
+      } catch (error) {
+        console.error(`[dsh-notify] 无法定位 snoretoast: ${error?.message ?? error}`);
+        debugLog(`snoretoast-resolve-failed ${error?.message ?? error}`);
+        return;
+      }
+      execFile(snore, ["-t", title, "-m", body, "-appID", options.appName], (error) => {
+        if (error) {
+          // snoretoast uses exit code 3 for "timed out waiting for click" — that is success.
+          if (error.code === 3) {
+            debugLog("snoretoast-ok timedout");
+            return;
+          }
+          console.error(`[dsh-notify] snoretoast 失败: ${error.message}`);
+          debugLog(`snoretoast-error ${error.message} code=${error.code}`);
+        } else {
+          debugLog("snoretoast-ok");
+        }
+      });
     } else {
       console.log(`[dsh-notify] 当前平台 ${process.platform} 不支持桌面通知，仅记录日志`);
     }
   } catch (error) {
     console.error(`[dsh-notify] 发送通知失败: ${String(error)}`);
+    debugLog(`fallback-throw ${String(error)}`);
   }
 }
 
@@ -180,12 +257,16 @@ function apply(ctx, config) {
   const options = mergeConfig(config);
   if (!options.enabled) {
     console.log("[dsh-notify] disabled by config, not mounting listeners");
+    debugLog("disabled by config");
     return;
   }
 
-  // 可选依赖：agents（根 agent 过滤）与 commands（测试命令）。
+  debugLog(
+    `mounting notifier=${notifier !== null} rootsOnly=${options.rootsOnly} platform=${process.platform} execPath=${process.execPath}`,
+  );
+
+  // Optional: agents (root filter). commands is injected.
   const agents = ctx.get("agents");
-  const commands = ctx.get("commands");
 
   function isRoot(agent) {
     if (agent === undefined) return !options.rootsOnly;
@@ -199,9 +280,15 @@ function apply(ctx, config) {
     try {
       if (payload?.status !== "idle") return;
       const agent = payload.agent;
-      if (!isRoot(agent)) return;
+      if (!isRoot(agent)) {
+        debugLog(`status-idle skip non-root agent=${agent?.id}`);
+        return;
+      }
       const reason = lastTurnReason(agent);
-      if (reason === undefined) return;
+      if (reason === undefined) {
+        debugLog(`status-idle skip no turn/end agent=${agent?.id}`);
+        return;
+      }
       if (reason.kind === "completed" || reason.kind === "max-tokens") {
         if (!options.notifyOnComplete) return;
         const summary = truncate(lastUserText(agent), options.bodyLimit) || `会话 ${agent.id}`;
@@ -211,10 +298,13 @@ function apply(ctx, config) {
         if (!options.notifyOnError) return;
         const detail = truncate(errorText(reason), options.bodyLimit) || "agent 运行出错";
         sendNotification(options, `${options.appName} · 任务出错`, detail, options.errorUrgency);
+      } else {
+        // kind === "aborted"（用户取消）与 "blocked"（内部拒绝）不通知。
+        debugLog(`status-idle skip reason.kind=${reason.kind} agent=${agent?.id}`);
       }
-      // kind === "aborted"（用户取消）与 "blocked"（内部拒绝）不通知。
     } catch (error) {
       console.error(`[dsh-notify] agent/status 处理失败: ${String(error)}`);
+      debugLog(`status-idle error ${String(error)}`);
     }
   });
 
@@ -250,24 +340,23 @@ function apply(ctx, config) {
   });
 
   // 测试命令：/dsh-notify-test —— 手动验证通知链路。
-  if (commands !== undefined) {
-    ctx.effect(function* () {
-      yield commands.register({
-        name: "dsh-notify-test",
-        description: "发送一条 dsh-notify 测试系统通知",
-        handler: (invocation) => {
-          sendNotification(options, `${options.appName} · 测试通知`, "dsh-notify 插件工作正常", "normal");
-          return { kind: "success", text: "已发送测试通知，请查看系统通知栏。" };
-        },
-      });
-    }, "dsh-notify test command");
-  }
+  ctx.effect(function* () {
+    yield ctx.commands.register({
+      name: "dsh-notify-test",
+      description: "发送一条 dsh-notify 测试系统通知",
+      handler: () => {
+        sendNotification(options, `${options.appName} · 测试通知`, "dsh-notify 插件工作正常", "normal");
+        return { kind: "success", text: "已发送测试通知，请查看系统通知栏（Win+N）。" };
+      },
+    });
+  }, "dsh-notify test command");
 
   console.log(
     `[dsh-notify] 插件已挂载 (rootsOnly=${options.rootsOnly}, notifyOnComplete=${options.notifyOnComplete}, ` +
       `notifyOnQuestion=${options.notifyOnQuestion}, notifyOnApproval=${options.notifyOnApproval}, ` +
       `notifyOnError=${options.notifyOnError})`,
   );
+  debugLog("mounted listeners + /dsh-notify-test");
 }
 
-export { apply, name };
+export { apply, inject, name };
