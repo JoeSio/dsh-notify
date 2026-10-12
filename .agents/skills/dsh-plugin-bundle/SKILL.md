@@ -11,8 +11,8 @@ description: >-
   plugins.bundle.config, dsh.client, or lib/client.js — even if the user only
   says "install the plugin" or "fix dsh load". Prefer this over re-fetching
   DSH docs. For LLM provider/credential/reasoning-effort config, use the
-  personal dsh-configuration skill instead. Harness source (when available):
-  C:\Users\joesiw\dev\others\deepseek-harness.
+  personal dsh-configuration skill instead. Prefer a local deepseek-harness
+  checkout when available; otherwise use the official docs URLs below.
 ---
 
 # DSH plugin bundles
@@ -164,14 +164,13 @@ Use `agent.session.snapshotEvents()` (deprecated but still present; optional fal
 ## This repo (dsh-notify)
 
 - Package / Cordis name: `dsh-notify` (entry id = package name)
-- Entry: `index.js` (ESM); `inject: ['commands']`; exports `Config` (`locale` volatile `zh`|`en`); uses `node-notifier` (Windows → snoretoast)
+- Entry: `index.js` (ESM); `inject: ['commands']`; exports `Config` (`locale` volatile `zh`|`en`); Windows → WinRT protocol toast (`dsh://open`); other OS → node-notifier
 - Browser: `lib/client.js` → `plugins.bundle.config` key `dsh-notify` (Language / 通知语言 select)
 - Deps: `node-notifier`, `@deepseek-ai/schemastery` (~3.18.4+)
 - Bundle patch: `cordis.patch.yml` inserts `id: dsh-notify`
 - Smoke: `/dsh-notify-test`; diagnostics: `~/.dsh/dsh-notify.debug.log`
-- Fork remote: `origin` = `https://github.com/JoeSio/dsh-notify.git`; `upstream` = haytham818
-- Git author for commits: repo-local `JoeSio <joe_sio@hotmail.com>` (see `.cursor/rules/git-author.mdc`)
-- Local harness checkout (preferred over re-fetching docs): `C:\Users\joesiw\dev\others\deepseek-harness`
+- Fork remotes: see `git remote -v` (avoid machine-local absolute paths in docs)
+- Git author for commits: repo-local config / `.cursor/rules/git-author.mdc`
 
 Detailed Windows / completion debugging: [references/notify-troubleshoot.md](references/notify-troubleshoot.md).
 
@@ -187,7 +186,8 @@ Detailed Windows / completion debugging: [references/notify-troubleshoot.md](ref
 | `/dsh-notify-test` works, task-complete never notifies | Reading `session.events` — switch to `snapshotEvents()` |
 | Desktop `--dump-config` errors | Expected; inspect profile `package.json` / quit+reopen Desktop |
 | No host console for `[dsh-notify]` logs | Read `~/.dsh/dsh-notify.debug.log`; fully restart after code changes |
-| Windows: toast API works, user sees nothing | Check Win+N and Settings → Notifications → **DSH** |
+| Windows: toast API works, user sees nothing | Check Win+N and Settings → Notifications → **DSH Notify** |
+| Windows: toast click does not focus Desktop | Use WinRT protocol toast (`launch=dsh://open`, appID `com.dsh-notify.app`); do not rely on snoretoast `-application` or Desktop AUMID; fully quit/reopen after plugin change |
 | Plugins page has Uninstall/Components but no config fields | Need `Config` + `.volatile()` **and** `lib/client.js` registering `plugins.bundle.config` / `plugins.row.config`; schema alone is not enough |
 | Language dropdown missing after code change | Confirm `dsh.client` + `./client` export; `pnpm/npm install` in plugin; fully quit Desktop |
 
@@ -197,6 +197,7 @@ Detailed Windows / completion debugging: [references/notify-troubleshoot.md](ref
 - Bundle + `dsh plugin add`: https://deepseek-harness.github.io/deepseek-harness/en/develop/basic/publish
 - Live Config forms cookbook: https://deepseek-harness.github.io/deepseek-harness/en/reference/cookbook/adding-a-settings-card
 - Architecture (profile/bundle): https://deepseek-harness.github.io/deepseek-harness/en/reference/
-- Prefer local checkout `C:\Users\joesiw\dev\others\deepseek-harness` (`packages/client/ui-plugin-manager`, `docs/cookbook/adding-a-settings-card.md`) over re-fetching.
+- Prefer a local harness checkout (`packages/client/ui-plugin-manager`, `docs/cookbook/adding-a-settings-card.md`) over re-fetching when one is available.
 
 Do not re-research these on every session unless versions or errors contradict this skill — then update this skill.
+Do not commit machine-local absolute paths or personal usernames into this skill.

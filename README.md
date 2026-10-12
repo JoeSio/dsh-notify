@@ -67,12 +67,12 @@ dsh --profile web --dump-config   # 应出现 "# == dsh-notify" 层
 - **阻塞提问**：监听 `tools/execute` 瀑布，识别 `ask_user_question` 派发（该工具会一直阻塞到用户回答）。
 - **等待审批**：监听 `approval/request` 瀑布（必须调用并返回 `next()` 以保持审批链）。
 - 根 agent 过滤：`agents.roots()`。
-- 通知发送：通过 **node-notifier** 跨平台封装——Linux 走 `notify-send`（`-a` 应用名、`-u` 优先级）、macOS 走内置的 terminal-notifier、Windows 走 snoretoast（应用名映射为 toast appID）。库未安装时回退为直接调用 `notify-send` / `osascript`。失败只记日志不影响 agent。
-- **点击通知**：唤起 Desktop（`dsh://open` 聚焦主窗口）。当前官方壳不透传 `session=`，因此还不能直达对应会话；等 harness 支持后再接会话跳转。
+- 通知发送：Linux / macOS 走 **node-notifier**（`notify-send` / terminal-notifier）；Windows 走 WinRT protocol toast（点击 `dsh://open` 聚焦 Desktop），失败时回退 snoretoast（仅展示）。失败只记日志不影响 agent。
+- **点击通知（Windows）**：`activationType=protocol` + `launch=dsh://open`；AUMID 为中性的 `com.dsh-notify.app`（通知中心显示 **DSH Notify**）。会话直达仍需 harness 透传 `session=`。
 
 ## 排查
 
 - 通知没出现：确认 `notify-send` 在 PATH（`command -v notify-send`，node-notifier 的 Linux 后端同样依赖它），且 dsh 宿主进程继承了桌面会话环境（`DBUS_SESSION_BUS_ADDRESS`、`DISPLAY`/`WAYLAND_DISPLAY`）。从终端启动 dsh 一般没问题；若以 systemd user service 启动，检查服务的环境。
 - 宿主日志中 `[dsh-notify]` 前缀会打印每次通知内容与失败原因（`dsh` 启动时的终端输出）。若日志出现「node-notifier 未安装」警告，说明仓库依赖没装好（见安装步骤 1）。
-- Windows：原生支持（snoretoast），无需额外配置。点击 toast 应唤起 Desktop；debug 日志会出现 `notify-activate → focus-desktop` / `focus-desktop-ok`。
+- Windows：点击 toast 应唤起已缩小的 Desktop。debug 应有 `winrt-toast-ok shown`；Win+N 来源为 **DSH Notify**。
 - 挂载是否成功：输入 `/dsh-notify-test`，能执行即已挂载。改代码后需**完全退出** Desktop（含托盘）再开。

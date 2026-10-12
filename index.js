@@ -11,20 +11,25 @@
 //   - 阻塞提问    tools/execute 派发 ask_user_question（工具阻塞等待用户回答）
 //   - 等待审批    approval/request 派发（工具等待用户批准）
 //
-// 点击通知时通过 `dsh://open` 唤起 Desktop 主窗口（exact match；带 query 的
-// 深链目前会被官方壳忽略，会话直达需等 harness 透传 session=）。
+// Windows 点击唤起：WinRT toast（activationType=protocol, launch=dsh://open）。
+// snoretoast `-application` 在 Action Center 点击时不会启动；named pipe 会在横幅
+// 超时后退出，晚点击收不到 activate。协议激活不依赖回调。
+// 会话直达仍需 harness 透传 session=。
 //
 // 安装、配置与排查见仓库 README.md。
 //
 // Config 用 schemastery 声明；locale 为 .volatile()，可在 Plugins 页下拉切换
 // 而无需重挂插件。浏览器半在 lib/client.js，注册 plugins.bundle.config。
 
-import { execFile } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
+
+const PLUGIN_ROOT = dirname(fileURLToPath(import.meta.url));
 
 /** Cordis 插件名（与组合行的 name 一致）。 */
 const name = "dsh-notify";
@@ -244,50 +249,138 @@ try {
   console.warn(`[dsh-notify] node-notifier 未安装（在仓库目录执行 pnpm install 可装），回退到直接调用系统命令: ${error?.message ?? error}`);
 }
 
-/** Official Desktop deep link that only focuses the primary window (no session param yet). */
+/**
+ * Plugin-owned Windows AppUserModelID for toast display identity.
+ * Must NOT be Desktop's `com.deepseek.dsh` when relying on app activation;
+ * protocol launch (`dsh://open`) is what actually focuses Desktop.
+ */
+/** Neutral public AUMID — do not embed personal/org machine names. */
+const WINDOWS_NOTIFY_APP_ID = "com.dsh-notify.app";
+const WINDOWS_NOTIFY_SHORTCUT_NAME = "DSH Notify";
 const DSH_FOCUS_URL = "dsh://open";
 
-/** True when node-notifier / snoretoast reports the user activated the toast body. */
-function isNotificationActivate(response, metadata) {
-  const text = typeof response === "string" ? response.trim().toLowerCase() : "";
-  if (text === "activate" || text === "click" || text === "clicked") return true;
-  if (metadata !== null && typeof metadata === "object") {
-    const activation = String(metadata.activationType ?? metadata.action ?? "")
-      .trim()
-      .toLowerCase();
-    if (activation === "activate" || activation === "click" || activation === "clicked") return true;
+/** Resolve bundled snoretoast.exe next to node-notifier. */
+function resolveSnoretoastPath() {
+  try {
+    const require = createRequire(import.meta.url);
+    const notifierRoot = join(require.resolve("node-notifier/package.json"), "..");
+    return join(
+      notifierRoot,
+      "vendor",
+      "snoreToast",
+      process.arch === "x64" ? "snoretoast-x64.exe" : "snoretoast-x86.exe",
+    );
+  } catch {
+    return undefined;
   }
-  return false;
+}
+
+/** Shortcut target for snoretoast -install (required before custom appID toasts show). */
+function resolveFocusHelperPath() {
+  return join(PLUGIN_ROOT, "scripts", "focus-desktop.cmd");
+}
+
+/** Once per host process: register Start Menu shortcut required by custom appID. */
+let windowsNotifyShortcutReady = false;
+function ensureWindowsNotifyShortcut(snore, helper) {
+  if (windowsNotifyShortcutReady) return true;
+  if (snore === undefined || !existsSync(snore) || !existsSync(helper)) return false;
+  try {
+    execFileSync(snore, ["-install", WINDOWS_NOTIFY_SHORTCUT_NAME, helper, WINDOWS_NOTIFY_APP_ID], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    windowsNotifyShortcutReady = true;
+    debugLog(`snoretoast-install ok appID=${WINDOWS_NOTIFY_APP_ID} helper=${JSON.stringify(helper)}`);
+    return true;
+  } catch (error) {
+    debugLog(`snoretoast-install-error ${error?.message ?? error}`);
+    return false;
+  }
+}
+
+/** Escape text for inclusion inside a WinRT toast XML document. */
+function escapeXml(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 /**
- * Raise DeepSeek Harness Desktop via the registered `dsh://` protocol.
- * Must be exactly `dsh://open` — current shells match that URL only and drop query strings.
+ * Show a WinRT toast whose body click launches `dsh://open` (protocol activation).
+ * Falls back to snoretoast (display-only) if PowerShell / WinRT is unavailable.
  */
-function focusDesktop() {
-  debugLog(`focus-desktop url=${DSH_FOCUS_URL} platform=${process.platform}`);
-  const done = (error) => {
-    if (error) {
-      console.error(`[dsh-notify] 唤起 Desktop 失败: ${error.message ?? error}`);
-      debugLog(`focus-desktop-error ${error.message ?? error}`);
+function sendWindowsToast(title, body) {
+  const snore = resolveSnoretoastPath();
+  const helper = resolveFocusHelperPath();
+  ensureWindowsNotifyShortcut(snore, helper);
+
+  const xml = `<toast activationType="protocol" launch="${escapeXml(DSH_FOCUS_URL)}">
+  <visual>
+    <binding template="ToastGeneric">
+      <text>${escapeXml(title)}</text>
+      <text>${escapeXml(body)}</text>
+    </binding>
+  </visual>
+</toast>`;
+  const xmlBase64 = Buffer.from(xml, "utf8").toString("base64");
+  const stamp = `${process.pid}-${Date.now()}`;
+  const scriptPath = join(tmpdir(), `dsh-notify-toast-${stamp}.ps1`);
+  const ps1 = [
+    "$ErrorActionPreference = 'Stop'",
+    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null",
+    "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null",
+    `$xmlText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${xmlBase64}'))`,
+    "$doc = New-Object Windows.Data.Xml.Dom.XmlDocument",
+    "$doc.LoadXml($xmlText)",
+    "$toast = [Windows.UI.Notifications.ToastNotification]::new($doc)",
+    `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('${WINDOWS_NOTIFY_APP_ID}').Show($toast)`,
+  ].join("\r\n");
+
+  try {
+    writeFileSync(scriptPath, ps1, "utf8");
+  } catch (error) {
+    debugLog(`winrt-script-write-failed ${error?.message ?? error}`);
+    sendWindowsToastSnoretoastFallback(snore, title, body);
+    return;
+  }
+
+  debugLog(`winrt-toast appID=${WINDOWS_NOTIFY_APP_ID} launch=${DSH_FOCUS_URL} script=${JSON.stringify(scriptPath)}`);
+  execFile(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+    { windowsHide: true },
+    (error) => {
+      try {
+        if (existsSync(scriptPath)) unlinkSync(scriptPath);
+      } catch {
+        // ignore
+      }
+      if (error) {
+        console.error(`[dsh-notify] WinRT toast 失败: ${error.message}`);
+        debugLog(`winrt-toast-error ${error.message}`);
+        sendWindowsToastSnoretoastFallback(snore, title, body);
+        return;
+      }
+      debugLog("winrt-toast-ok shown");
+    },
+  );
+}
+
+/** Display-only snoretoast fallback when WinRT protocol toast cannot be shown. */
+function sendWindowsToastSnoretoastFallback(snore, title, body) {
+  if (snore === undefined || !existsSync(snore)) {
+    console.error("[dsh-notify] 无法定位 snoretoast");
+    debugLog("snoretoast-resolve-failed");
+    return;
+  }
+  debugLog(`snoretoast-fallback appID=${WINDOWS_NOTIFY_APP_ID}`);
+  execFile(snore, ["-t", title, "-m", body, "-appID", WINDOWS_NOTIFY_APP_ID], { windowsHide: true }, (error) => {
+    if (error && error.code !== 3 && error.code !== 2 && error.code !== 1) {
+      console.error(`[dsh-notify] snoretoast 失败: ${error.message}`);
+      debugLog(`snoretoast-error ${error.message} code=${error.code}`);
       return;
     }
-    debugLog("focus-desktop-ok");
-  };
-  try {
-    if (process.platform === "win32") {
-      // `start` needs an empty window title when the target is a URL.
-      execFile("cmd.exe", ["/c", "start", "", DSH_FOCUS_URL], { windowsHide: true }, done);
-    } else if (process.platform === "darwin") {
-      execFile("open", [DSH_FOCUS_URL], done);
-    } else if (process.platform === "linux") {
-      execFile("xdg-open", [DSH_FOCUS_URL], done);
-    } else {
-      debugLog(`focus-desktop-skip unsupported platform=${process.platform}`);
-    }
-  } catch (error) {
-    done(error instanceof Error ? error : new Error(String(error)));
-  }
+    debugLog(`snoretoast-fallback-ok code=${error?.code ?? 0}`);
+  });
 }
 
 /**
@@ -301,38 +394,24 @@ function sendNotification(options, title, body, urgency) {
   console.log(`[dsh-notify] ${title}: ${body}`);
   debugLog(`notify title=${JSON.stringify(title)} body=${JSON.stringify(body)} platform=${process.platform}`);
 
-  // 主路径：node-notifier。
-  // 平台分派由库内部完成：Linux→notify-send（-a appName、-u urgency），
-  // macOS→terminal-notifier，Windows→snoretoast（appName 映射为 appID）。
-  // wait:true 让回调能收到点击；Windows toaster 本身也会等用户动作。
+  // Windows: WinRT protocol toast (click → dsh://open).
+  if (process.platform === "win32") {
+    sendWindowsToast(title, body);
+    return;
+  }
+
+  // 主路径：node-notifier（非 Windows）。
   if (notifier !== null) {
     try {
       notifier.notify(
-        {
-          title,
-          message: body,
-          urgency,
-          appName: options.appName,
-          appID: options.appName,
-          wait: true,
-          timeout: 120,
-        },
+        { title, message: body, urgency, appName: options.appName },
         (error, response, metadata) => {
           if (error) {
-            // snoretoast exit 3 = timed out waiting for click — toast was shown successfully.
-            if (error.code === 3) {
-              debugLog("notify-ok timedout");
-              return;
-            }
             console.error(`[dsh-notify] 通知发送失败: ${error.message ?? error}`);
             debugLog(`notify-error ${error.message ?? error}`);
             return;
           }
           debugLog(`notify-ok response=${JSON.stringify(response)} meta=${JSON.stringify(metadata)}`);
-          if (isNotificationActivate(response, metadata)) {
-            debugLog("notify-activate → focus-desktop");
-            focusDesktop();
-          }
         },
       );
       return;
@@ -353,38 +432,6 @@ function sendNotification(options, title, body, urgency) {
       const script = `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`;
       execFile("osascript", ["-e", script], (error) => {
         if (error) console.error(`[dsh-notify] osascript 失败: ${error.message}`);
-      });
-    } else if (process.platform === "win32") {
-      // node-notifier missing: invoke bundled snoretoast directly.
-      const require = createRequire(import.meta.url);
-      let snore;
-      try {
-        const notifierRoot = join(require.resolve("node-notifier/package.json"), "..");
-        snore = join(
-          notifierRoot,
-          "vendor",
-          "snoreToast",
-          process.arch === "x64" ? "snoretoast-x64.exe" : "snoretoast-x86.exe",
-        );
-      } catch (error) {
-        console.error(`[dsh-notify] 无法定位 snoretoast: ${error?.message ?? error}`);
-        debugLog(`snoretoast-resolve-failed ${error?.message ?? error}`);
-        return;
-      }
-      execFile(snore, ["-t", title, "-m", body, "-appID", options.appName], (error) => {
-        if (error) {
-          // snoretoast uses exit code 3 for "timed out waiting for click" — that is success.
-          if (error.code === 3) {
-            debugLog("snoretoast-ok timedout");
-            return;
-          }
-          console.error(`[dsh-notify] snoretoast 失败: ${error.message}`);
-          debugLog(`snoretoast-error ${error.message} code=${error.code}`);
-          return;
-        }
-        // Exit 0 without a named pipe usually means the toast body was activated.
-        debugLog("snoretoast-ok activate → focus-desktop");
-        focusDesktop();
       });
     } else {
       console.log(`[dsh-notify] 当前平台 ${process.platform} 不支持桌面通知，仅记录日志`);
