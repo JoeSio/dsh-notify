@@ -52,6 +52,7 @@ Host stdout/stderr are not a user-visible console. This plugin appends to:
 - Manual smoke (outside dsh): run snoretoast or a tiny `node-notifier` script; registry/app id appears as `DSH`
 - User check: **Win+N** notification center; Settings → Notifications → **DSH** (banner/toast should be on)
 - snoretoast exit code `3` = timed out waiting for click = success
+- Toast **click** → plugin opens exact `dsh://open` (focus only; no `?session=` until harness forwards it). Debug: `notify-activate → focus-desktop` then `focus-desktop-ok`
 
 Compose-check Desktop profile without `--dump-config` (blocked): load `@deepseek-ai/dsh-app-boot` via Electron-as-Node against `~/.dsh/profiles/desktop` + install anchor under `app.asar`, or inspect `package.json` bundles + `skippedBundles` at host start.
 
@@ -60,4 +61,5 @@ Compose-check Desktop profile without `--dump-config` (blocked): load `@deepseek
 1. Fully quit Desktop → reopen  
 2. Confirm `~/.dsh/dsh-notify.debug.log` has a fresh `mounted` line  
 3. `/dsh-notify-test` → toast + `notify-ok` in debug log  
-4. Short agent turn → `DSH · 任务完成` + debug log without `skip no turn/end`
+4. Click the toast → Desktop focuses; debug has `focus-desktop-ok`  
+5. Short agent turn → `DSH · 任务完成` + debug log without `skip no turn/end`

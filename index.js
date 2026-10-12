@@ -11,6 +11,9 @@
 //   - 阻塞提问    tools/execute 派发 ask_user_question（工具阻塞等待用户回答）
 //   - 等待审批    approval/request 派发（工具等待用户批准）
 //
+// 点击通知时通过 `dsh://open` 唤起 Desktop 主窗口（exact match；带 query 的
+// 深链目前会被官方壳忽略，会话直达需等 harness 透传 session=）。
+//
 // 安装、配置与排查见仓库 README.md。
 //
 // Config 用 schemastery 声明；locale 为 .volatile()，可在 Plugins 页下拉切换
@@ -67,7 +70,7 @@ const MESSAGES = {
     toolNeedsApproval: (tool) => `工具 ${tool} 需要审批`,
     testTitle: "测试通知",
     testBody: "dsh-notify 插件工作正常",
-    testCommandOk: "已发送测试通知，请查看系统通知栏（Win+N）。",
+    testCommandOk: "已发送测试通知，请查看系统通知栏（Win+N）。点击通知可唤起 Desktop。",
     testCommandDescription: "发送一条 dsh-notify 测试系统通知",
   },
   en: {
@@ -82,7 +85,7 @@ const MESSAGES = {
     toolNeedsApproval: (tool) => `Tool ${tool} needs approval`,
     testTitle: "Test notification",
     testBody: "dsh-notify is working",
-    testCommandOk: "Test notification sent. Check the system notification center (Win+N).",
+    testCommandOk: "Test notification sent. Check the system notification center (Win+N). Click the toast to focus Desktop.",
     testCommandDescription: "Send a dsh-notify test system notification",
   },
 };
@@ -241,6 +244,52 @@ try {
   console.warn(`[dsh-notify] node-notifier 未安装（在仓库目录执行 pnpm install 可装），回退到直接调用系统命令: ${error?.message ?? error}`);
 }
 
+/** Official Desktop deep link that only focuses the primary window (no session param yet). */
+const DSH_FOCUS_URL = "dsh://open";
+
+/** True when node-notifier / snoretoast reports the user activated the toast body. */
+function isNotificationActivate(response, metadata) {
+  const text = typeof response === "string" ? response.trim().toLowerCase() : "";
+  if (text === "activate" || text === "click" || text === "clicked") return true;
+  if (metadata !== null && typeof metadata === "object") {
+    const activation = String(metadata.activationType ?? metadata.action ?? "")
+      .trim()
+      .toLowerCase();
+    if (activation === "activate" || activation === "click" || activation === "clicked") return true;
+  }
+  return false;
+}
+
+/**
+ * Raise DeepSeek Harness Desktop via the registered `dsh://` protocol.
+ * Must be exactly `dsh://open` — current shells match that URL only and drop query strings.
+ */
+function focusDesktop() {
+  debugLog(`focus-desktop url=${DSH_FOCUS_URL} platform=${process.platform}`);
+  const done = (error) => {
+    if (error) {
+      console.error(`[dsh-notify] 唤起 Desktop 失败: ${error.message ?? error}`);
+      debugLog(`focus-desktop-error ${error.message ?? error}`);
+      return;
+    }
+    debugLog("focus-desktop-ok");
+  };
+  try {
+    if (process.platform === "win32") {
+      // `start` needs an empty window title when the target is a URL.
+      execFile("cmd.exe", ["/c", "start", "", DSH_FOCUS_URL], { windowsHide: true }, done);
+    } else if (process.platform === "darwin") {
+      execFile("open", [DSH_FOCUS_URL], done);
+    } else if (process.platform === "linux") {
+      execFile("xdg-open", [DSH_FOCUS_URL], done);
+    } else {
+      debugLog(`focus-desktop-skip unsupported platform=${process.platform}`);
+    }
+  } catch (error) {
+    done(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
 /**
  * 发送一条系统通知。
  * @param options 合并后的插件配置（appName 等）
@@ -255,17 +304,35 @@ function sendNotification(options, title, body, urgency) {
   // 主路径：node-notifier。
   // 平台分派由库内部完成：Linux→notify-send（-a appName、-u urgency），
   // macOS→terminal-notifier，Windows→snoretoast（appName 映射为 appID）。
+  // wait:true 让回调能收到点击；Windows toaster 本身也会等用户动作。
   if (notifier !== null) {
     try {
       notifier.notify(
-        { title, message: body, urgency, appName: options.appName, appID: options.appName },
+        {
+          title,
+          message: body,
+          urgency,
+          appName: options.appName,
+          appID: options.appName,
+          wait: true,
+          timeout: 120,
+        },
         (error, response, metadata) => {
           if (error) {
+            // snoretoast exit 3 = timed out waiting for click — toast was shown successfully.
+            if (error.code === 3) {
+              debugLog("notify-ok timedout");
+              return;
+            }
             console.error(`[dsh-notify] 通知发送失败: ${error.message ?? error}`);
             debugLog(`notify-error ${error.message ?? error}`);
             return;
           }
           debugLog(`notify-ok response=${JSON.stringify(response)} meta=${JSON.stringify(metadata)}`);
+          if (isNotificationActivate(response, metadata)) {
+            debugLog("notify-activate → focus-desktop");
+            focusDesktop();
+          }
         },
       );
       return;
@@ -313,9 +380,11 @@ function sendNotification(options, title, body, urgency) {
           }
           console.error(`[dsh-notify] snoretoast 失败: ${error.message}`);
           debugLog(`snoretoast-error ${error.message} code=${error.code}`);
-        } else {
-          debugLog("snoretoast-ok");
+          return;
         }
+        // Exit 0 without a named pipe usually means the toast body was activated.
+        debugLog("snoretoast-ok activate → focus-desktop");
+        focusDesktop();
       });
     } else {
       console.log(`[dsh-notify] 当前平台 ${process.platform} 不支持桌面通知，仅记录日志`);
