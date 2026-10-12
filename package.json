@@ -4,8 +4,17 @@
   "description": "DSH 系统通知插件：任务完成、任务出错、等待用户回答、等待审批时发送操作系统通知。",
   "type": "module",
   "main": "index.js",
+  "files": [
+    "index.js",
+    "cordis.patch.yml"
+  ],
   "license": "MIT",
   "private": true,
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "dependencies": {
     "node-notifier": "^10.0.1"
   }

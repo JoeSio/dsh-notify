@@ -15,43 +15,40 @@ DSH（DeepSeek Harness）系统通知插件：当 agent **完成任务**、**出
 
 ## 安装
 
+本包是 DSH **bundle**：`package.json` 声明 `dsh.bundle`，并由 `cordis.patch.yml` 插入插件行。`dsh plugin add` 会链接依赖并把本包追加到 profile 的 `dsh.profile.bundles`，无需再手写插入行。
+
 ```bash
-# 1. 安装插件依赖（node-notifier）。dsh plugin add 只链接仓库、不会装它的依赖，
-#    必须先在仓库目录执行一次安装：
-cd /home/haytham/Repos/dsh-plugins/dsh-notify && pnpm install   # 或 npm install
+# 1. 安装插件依赖（node-notifier）。链接安装只指向本仓库，不会代装依赖：
+cd /path/to/dsh-notify && pnpm install   # 或 npm install
 
-# 2. 把本仓库加入 dsh web profile（会在 profile 的 node_modules 里建链接）
-dsh plugin --profile web add "link:/home/haytham/Repos/dsh-plugins/dsh-notify"
+# 2. 加入目标 profile（web / desktop 等）
+dsh plugin --profile web add ./dsh-notify
+# 或绝对路径：
+# dsh plugin --profile web add "link:C:/Users/you/dsh-plugins/dsh-notify"
 
-# 3. 在 ~/.dsh/profiles/web/cordis.patch.yml 中追加插入行（profile 的 HMR 会自动热加载）：
-```
-
-```yaml
-- insert:
-    - id: dsh-notify
-      name: dsh-notify
+# 3. 可选：确认层已挂上
+dsh --profile web --dump-config   # 应出现 "# == dsh-notify" 层
 ```
 
 ## 配置
 
-插入行可带 `config` 覆盖默认配置（`apply(ctx, config)` 与默认值合并）：
+默认配置已在 bundle 的 `cordis.patch.yml` 中挂载。若要覆盖，在 profile 的 `~/.dsh/profiles/<profile>/cordis.patch.yml` 里按 `id` 整行替换（patch 是整份 `config` 赋值，不是深合并）：
 
 ```yaml
-- insert:
-    - id: dsh-notify
-      name: dsh-notify
-      config:
-        appName: DSH
-        notifyOnComplete: true
-        notifyOnError: true
-        notifyOnQuestion: true
-        notifyOnApproval: true
-        rootsOnly: true
-        completeUrgency: normal   # low | normal | critical
-        blockingUrgency: critical # 提问/审批（等待你操作）默认 critical（常驻）
-        errorUrgency: critical
-        bodyLimit: 100
-        enabled: true
+- id: dsh-notify
+  name: dsh-notify
+  config:
+    appName: DSH
+    notifyOnComplete: true
+    notifyOnError: true
+    notifyOnQuestion: true
+    notifyOnApproval: true
+    rootsOnly: true
+    completeUrgency: normal   # low | normal | critical
+    blockingUrgency: critical # 提问/审批（等待你操作）默认 critical（常驻）
+    errorUrgency: critical
+    bodyLimit: 100
+    enabled: true
 ```
 
 ## 测试
