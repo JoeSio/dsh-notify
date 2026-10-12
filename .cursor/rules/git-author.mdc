@@ -1,0 +1,13 @@
+---
+description: Use JoeSio as git author for all commits in this repo
+alwaysApply: true
+---
+
+# Git author for this repo
+
+When creating git commits in this repository:
+
+- Author must be `JoeSio <joe_sio@hotmail.com>`
+- Do not ask the user to restate the author each time
+- Prefer the repo-local `user.name` / `user.email` (already set). If a commit must override, use `--author="JoeSio <joe_sio@hotmail.com>"`
+- Do not change global git config; only this repo's local config is allowed for identity
